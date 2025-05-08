@@ -444,27 +444,56 @@
 
         // Initialize the application
         function init() {
+            // Check if browser supports necessary APIs
+            if (!window.AudioContext && !window.webkitAudioContext) {
+                document.body.innerHTML = '<div class="container"><h1>Browser Not Supported</h1><p>Your browser does not support the Web Audio API. Please try using Chrome, Safari, Firefox, or Edge.</p></div>';
+                return;
+            }
+            
+            // Initialize components
             loadVoices();
             setupEventListeners();
+            
+            // Add browser check notification
+            if (!/chrome|safari|firefox|edge/i.test(navigator.userAgent)) {
+                showStatus('For best results, please use Chrome, Safari, Firefox, or Edge.', 'converting');
+            }
         }
 
         // Load available speech synthesis voices
         function loadVoices() {
-            // We need to wait for the voiceschanged event in some browsers
-            if (window.speechSynthesis) {
-                window.speechSynthesis.onvoiceschanged = () => {
-                    voices = window.speechSynthesis.getVoices();
-                    updateVoicesList();
-                };
-                
-                // Try to get voices immediately as well
+            if (!window.speechSynthesis) {
+                voiceSelect.innerHTML = '<option value="none">Speech synthesis not supported</option>';
+                showStatus('Speech synthesis is not supported in your browser.', 'error');
+                return;
+            }
+            
+            // Function to handle available voices
+            const populateVoiceList = () => {
                 voices = window.speechSynthesis.getVoices();
+                
                 if (voices.length > 0) {
                     updateVoicesList();
+                } else {
+                    voiceSelect.innerHTML = '<option value="none">No voices available</option>';
+                    showStatus('No speech synthesis voices found. Try using Chrome, Edge, or Safari.', 'error');
                 }
-            } else {
-                voiceSelect.innerHTML = '<option value="none">Speech synthesis not supported</option>';
+            };
+            
+            // Chrome requires waiting for the voiceschanged event
+            if (window.speechSynthesis.onvoiceschanged !== undefined) {
+                window.speechSynthesis.onvoiceschanged = populateVoiceList;
             }
+            
+            // Try to get voices immediately for other browsers
+            populateVoiceList();
+            
+            // If after a short delay we still have no voices, show a helpful message
+            setTimeout(() => {
+                if (voices.length === 0) {
+                    showStatus('No speech synthesis voices found. Your browser may require permission to use speech synthesis, or try using a different browser like Chrome.', 'error');
+                }
+            }, 1000);
         }
 
         // Update the voices dropdown and preview cards
@@ -523,16 +552,37 @@
 
         // Preview a voice with a short sample text
         function previewVoice(voice) {
-            if (!window.speechSynthesis) return;
+            if (!window.speechSynthesis) {
+                showStatus('Speech synthesis is not supported in your browser.', 'error');
+                return;
+            }
             
-            // Cancel any ongoing speech
-            window.speechSynthesis.cancel();
-            
-            const utterance = new SpeechSynthesisUtterance("This is a preview of how this voice sounds.");
-            utterance.voice = voice;
-            utterance.rate = parseFloat(rateSlider.value);
-            
-            window.speechSynthesis.speak(utterance);
+            try {
+                // Cancel any ongoing speech
+                window.speechSynthesis.cancel();
+                
+                // Create a short sample text
+                const utterance = new SpeechSynthesisUtterance("This is a preview of how this voice sounds.");
+                
+                // Set the voice and rate
+                utterance.voice = voice;
+                utterance.rate = parseFloat(rateSlider.value);
+                
+                // Add error handling
+                utterance.onerror = (event) => {
+                    console.error('Voice preview error:', event);
+                    showStatus('Error previewing voice. Try another voice or browser.', 'error');
+                };
+                
+                // Speak the preview text
+                window.speechSynthesis.speak(utterance);
+                
+                // Show status message
+                showStatus(`Previewing: ${voice.name}`, 'converting');
+            } catch (error) {
+                console.error('Error previewing voice:', error);
+                showStatus('Failed to preview voice.', 'error');
+            }
         }
 
         // Set up all event listeners
@@ -618,9 +668,9 @@
         }
 
         // Convert text to speech
-        async function convertToSpeech() {
-            if (!currentVoice) {
-                showStatus('Please select a voice first.', 'error');
+        function convertToSpeech() {
+            if (!window.speechSynthesis) {
+                showStatus('Speech synthesis is not supported in your browser.', 'error');
                 return;
             }
 
@@ -636,99 +686,96 @@
                 return;
             }
 
-            showStatus('Converting text to speech...', 'converting');
+            // Cancel any ongoing speech
+            window.speechSynthesis.cancel();
 
-            try {
-                // Use Web Speech API to generate speech
-                const utterance = new SpeechSynthesisUtterance(textToConvert);
+            // Create the utterance
+            const utterance = new SpeechSynthesisUtterance(textToConvert);
+            
+            // Get the selected voice or use default voice
+            if (currentVoice) {
                 utterance.voice = currentVoice;
-                utterance.rate = currentRate;
-
-                // Set up audio recording to capture the speech
-                await setupAudioRecording(utterance);
-                
-                showStatus('Text converted to speech successfully.', 'success');
-                playerContainer.classList.remove('hidden');
-                noAudioMessage.classList.add('hidden');
-            } catch (error) {
-                console.error('Error converting text to speech:', error);
-                showStatus('Failed to convert text to speech.', 'error');
+            } else if (voices.length > 0) {
+                utterance.voice = voices[0];
+                currentVoice = voices[0];
             }
+            
+            // Set speech rate
+            utterance.rate = currentRate;
+            
+            // Create audio context for the player
+            if (!audioContext) {
+                try {
+                    audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                } catch (e) {
+                    console.error("Failed to create audio context:", e);
+                    showStatus('Audio playback is not supported in your browser.', 'error');
+                }
+            }
+            
+            // Reset player state
+            if (audioSource) {
+                audioSource.stop();
+                audioSource = null;
+            }
+            clearInterval(timerInterval);
+            isPlaying = false;
+            pausedTime = 0;
+            updatePlayPauseButton();
+            
+            // Show status and player
+            showStatus('Converting text to speech...', 'converting');
+            playerContainer.classList.remove('hidden');
+            noAudioMessage.classList.add('hidden');
+            
+            // Set up simulated audio for the player
+            createSimulatedAudio(textToConvert, currentRate);
+            
+            // Add events for the utterance
+            utterance.onstart = () => {
+                console.log('Speech started');
+            };
+            
+            utterance.onend = () => {
+                console.log('Speech ended');
+                showStatus('Text converted to speech successfully.', 'success');
+            };
+            
+            utterance.onerror = (event) => {
+                console.error('Speech synthesis error:', event);
+                showStatus('Error during speech synthesis.', 'error');
+            };
+            
+            // Speak the text
+            window.speechSynthesis.speak(utterance);
         }
 
-        // Set up audio recording to capture speech synthesis
-        async function setupAudioRecording(utterance) {
-            return new Promise((resolve, reject) => {
-                try {
-                    // Create an audio context
-                    if (!audioContext) {
-                        audioContext = new (window.AudioContext || window.webkitAudioContext)();
-                    }
-
-                    // Reset player state
-                    if (audioSource) {
-                        audioSource.stop();
-                        audioSource = null;
-                    }
-                    clearInterval(timerInterval);
-                    isPlaying = false;
-                    pausedTime = 0;
-                    updatePlayPauseButton();
-
-                    // This is a workaround since Web Speech API doesn't directly give us the audio data
-                    // In a real implementation, you'd use a proper TTS API that returns audio data
-                    
-                    // We'll simulate the process with a short demo
-                    // In reality, we'd convert the utterance to an audio file
-                    
-                    // Create a dummy audio buffer (in a real implementation, this would be the TTS audio)
-                    const sampleRate = 44100;
-                    const durationSeconds = estimateDuration(utterance.text, utterance.rate);
-                    const bufferSize = sampleRate * durationSeconds;
-                    const audioBuffer = audioContext.createBuffer(1, bufferSize, sampleRate);
-                    
-                    // For demo purposes, we'll generate a simple sine wave
-                    const channelData = audioBuffer.getChannelData(0);
-                    for (let i = 0; i < bufferSize; i++) {
-                        // Simple sine wave at 440Hz
-                        channelData[i] = Math.sin(i * 2 * Math.PI * 440 / sampleRate) * 0.5;
-                    }
-                    
-                    // Create an offline audio context to render the audio to an AudioBuffer
-                    const offlineContext = new OfflineAudioContext(1, bufferSize, sampleRate);
-                    const source = offlineContext.createBufferSource();
-                    source.buffer = audioBuffer;
-                    source.connect(offlineContext.destination);
-                    source.start();
-                    
-                    offlineContext.startRendering().then((renderedBuffer) => {
-                        // Convert the rendered buffer to a Blob
-                        const wavBlob = bufferToWave(renderedBuffer, renderedBuffer.length);
-                        audioBlob = wavBlob;
-                        
-                        // Load the blob into our audio player
-                        const reader = new FileReader();
-                        reader.onload = (e) => {
-                            // Create an AudioBuffer from the ArrayBuffer
-                            audioContext.decodeAudioData(e.target.result).then((decodedBuffer) => {
-                                // Store the buffer for playback
-                                audioBuffer = decodedBuffer;
-                                
-                                // Update UI
-                                updateDuration();
-                                
-                                // Also speak the text so user can hear it
-                                window.speechSynthesis.speak(utterance);
-                                
-                                resolve();
-                            }).catch(reject);
-                        };
-                        reader.readAsArrayBuffer(wavBlob);
-                    }).catch(reject);
-                } catch (error) {
-                    reject(error);
-                }
-            });
+        // Create simulated audio for the player UI
+        function createSimulatedAudio(text, rate) {
+            try {
+                // Estimate duration based on text length and rate
+                const durationSeconds = estimateDuration(text, rate);
+                
+                // Create a buffer for our player
+                const sampleRate = 44100;
+                const bufferSize = Math.ceil(sampleRate * durationSeconds);
+                const buffer = audioContext.createBuffer(1, bufferSize, sampleRate);
+                
+                // Fill the buffer with audio data (just silence for synchronization)
+                const channelData = buffer.getChannelData(0);
+                
+                // Convert the buffer to a WAV blob for download functionality
+                audioBlob = bufferToWave(buffer, buffer.length);
+                
+                // Store the buffer for playback
+                audioBuffer = buffer;
+                
+                // Update duration display
+                updateDuration();
+            } catch (error) {
+                console.error('Error creating audio:', error);
+                showStatus('Failed to create audio player.', 'error');
+            }
         }
 
         // Estimate audio duration based on text length and rate
